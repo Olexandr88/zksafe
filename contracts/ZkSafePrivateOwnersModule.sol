@@ -7,10 +7,11 @@ import "@gnosis.pm/safe-contracts/contracts/common/Enum.sol";
 import "@gnosis.pm/safe-contracts/contracts/GnosisSafe.sol";
 import "hardhat/console.sol";
 
-/* @title ZkSafeModule
- * @dev This contract implements a module for Gnosis Safe that allows for zk-SNARK verification of transactions.
+/* @title ZkSafePrivateOwnersModule
+ * @dev This contract implements a module for Safe that allows for zk-SNARK verification of transactions,
+ *      hiding the owners of the Safe.
  */
-contract ZkSafeModule {
+contract ZkSafePrivateOwnersModule {
     UltraVerifier verifier;
     address immutable zkSafeModuleAddress;
 

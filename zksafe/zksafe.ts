@@ -50,7 +50,7 @@ function padArray(arr: any[], length: number, fill: any = 0) {
     return arr.concat(Array(length - arr.length).fill(fill));
 }
 
-export async function zksend(hre, safeAddr: string, to: string, value: string, data: string, proof: string) {
+export async function po_zksend(hre, safeAddr: string, to: string, value: string, data: string, proof: string) {
     // Sign transaction using safe-core-sdk.
     const mywallet = new hre.ethers.Wallet(vars.get("SAFE_OWNER_PRIVATE_KEY"), hre.ethers.provider);
     const mywalletAddress = mywallet.address;
@@ -104,7 +104,7 @@ export async function zksend(hre, safeAddr: string, to: string, value: string, d
     console.log("Transaction result: ", await result);
 }
 
-export async function prove(hre, safeAddr: string, txHash: string, signatures_: string, zkSafeModulePrivateOwners: string[], ownersAddressesFormat: number) {
+export async function po_prove(hre, safeAddr: string, txHash: string, signatures_: string, zkSafeModulePrivateOwners: string[], ownersAddressesFormat: number) {
     const mywallet = new hre.ethers.Wallet(vars.get("SAFE_OWNER_PRIVATE_KEY"), hre.ethers.provider);
     const ethAdapter = new EthersAdapter({ ethers, signerOrProvider: mywallet });
     console.log("connecting to safe");
@@ -195,7 +195,7 @@ export async function prove(hre, safeAddr: string, txHash: string, signatures_: 
     console.log("proof", ethers.hexlify(correctProof.proof));
 }
 
-export async function sign(hre, safeAddr: string, to: string, value: string, data: string) {
+export async function po_sign(hre, safeAddr: string, to: string, value: string, data: string) {
     // Sign transaction using safe-core-sdk.
     const mywallet = new hre.ethers.Wallet(vars.get("SAFE_OWNER_PRIVATE_KEY"), hre.ethers.provider);
     console.log("mywallet: ", mywallet);
@@ -238,7 +238,7 @@ export async function sign(hre, safeAddr: string, to: string, value: string, dat
     console.log("Signature: ", safeSig.data);
 }
 
-export async function createZkSafe(hre, owners: string[], threshold: number, zkSafeModulePrivateOwners: string[], zkSafeModuleThreshold: number) {
+export async function po_createZkSafe(hre, owners: string[], threshold: number, zkSafeModulePrivateOwners: string[], zkSafeModuleThreshold: number) {
     const mywallet = new hre.ethers.Wallet(vars.get("DEPLOYER_PRIVATE_KEY"), hre.ethers.provider);
     console.log("initialized my wallet");
     const mywalletAddress = mywallet.address;
