@@ -53,7 +53,7 @@ function padArray(arr: any[], length: number, fill: any = 0) {
     return arr.concat(Array(length - arr.length).fill(fill));
 }
 
-describe("ZkSafeModule", function () {
+describe("ZkSafeModulePrivateOwners", function () {
     let ownerAdapters: EthersAdapter[];
     let zkSafeModule: ZkSafeModule;
     let safe: Safe;
