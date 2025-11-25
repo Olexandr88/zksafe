@@ -1,4 +1,4 @@
-import { zeroAddress, parseEther, encodeFunctionData, toHex, Account, toBytes, recoverAddress, recoverPublicKey, Hex, createWalletClient, http, WalletClient } from "viem";
+import { zeroAddress, parseEther, encodeFunctionData, toHex, Account, toBytes, recoverAddress, recoverPublicKey, Hex, createWalletClient, http, WalletClient, Address} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { formatEther } from 'viem';
 import Safe from '@safe-global/protocol-kit';
@@ -8,6 +8,8 @@ import assert from 'assert';
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { vars } from "hardhat/config";
 
+import { poseidon } from '@iden3/js-crypto';
+import { IMT } from '@zk-kit/imt';
 import circuit from '../noir/circuits/target/circuits.json';
 import { Noir } from '@noir-lang/noir_js';
 import { UltraHonkBackend } from '@aztec/bb.js';
@@ -55,92 +57,68 @@ function ensureHexPrefix(value: string): `0x${string}` {
     return value.startsWith("0x") ? value as `0x${string}` : `0x${value}`;
 }
 
-export async function zksend(hre: any, safeAddr: string, to: string, value: string, data: string, proof: string) {
-    // Get wallet client
-    const pk = ensureHexPrefix(vars.get("DEPLOYER_PRIVATE_KEY") as string);
-    const account = privateKeyToAccount(pk);
-    const mywalletAddress = account.address;
-    console.log("My wallet address: ", mywalletAddress);
-    const publicClient = await hre.viem.getPublicClient();
-
-    // Initialize Safe
-    const safe = await Safe.init({
-        provider: hre.network.config.url,
-        signer: pk,
-        safeAddress: safeAddr
-    });
-
-    const version = await safe.getContractVersion();
-    const threshold = await safe.getThreshold();
-    const owners = await safe.getOwners();
-    const safeAddress = await safe.getAddress();
-    console.log("connected to safe ", safeAddress);
-    console.log("  version: ", version);
-    console.log("  owners: ", owners);
-    console.log("  threshold: ", threshold);
-    console.log("  nonce: ", await safe.getNonce());
-    console.log("  chainId: ", await safe.getChainId());
-    console.log("  balance: ", formatEther(await safe.getBalance()));
-
-    // Find ZkSafeModule
-    const modules = await safe.getModules();
-    let zkSafeModule = null;
-    for (const moduleAddress of modules) {
-        console.log("Checking module: ", moduleAddress);
-        try {
-            const module = await hre.viem.getContractAt("ZkSafeModule", moduleAddress);
-            const version = await module.read.zkSafeModuleVersion();
-            console.log("ZkSafe version: ", version);
-            zkSafeModule = module;
-            break;
-        } catch (e) {
-            console.log("Not a ZkSafe module", e);
-        }
+export function makeOwnersMerkleTree(owners: Address[]) {
+    const depth = Math.ceil(Math.log2(owners.length));
+    let ownersMerkleTree = new IMT(poseidon.hash, depth, 0, 2);
+    const sortedOwners = [...owners].sort((a, b) => a.localeCompare(b));
+    for (let owner of sortedOwners) {
+        ownersMerkleTree.insert(poseidon.hash([BigInt(owner)]));
     }
-    if (!zkSafeModule) {
-        throw new Error(`ZkSafeModule not found on Safe ${safeAddress}`);
-    }
-
-    // Send transaction
-    const txn = await zkSafeModule.write.sendZkSafeTransaction([
-        safeAddress,
-        {
-            to,
-            value: BigInt(value),
-            data,
-            operation: 0
-        },
-        proof
-    ]);
-
-    console.log("Transaction hash: ", txn);
-    const receipt = await publicClient.waitForTransactionReceipt({ hash: txn });
-    console.log("Transaction result: ", receipt);
+    return ownersMerkleTree;
 }
 
-export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment, safe: Safe, signatures: Hex[], txHash: Hex,
-                                                 privateOwners: boolean) {
-        const { noir, backend } = await hre.noir.getCircuit("circuits");
-        console.log("noir backend initialized");
+export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
+                                                 safe: Safe,
+                                                 signatures: Hex[],
+                                                 txHash: Hex,
+                                                 privateOwners: Address[],
+                                                 threshold: Number) {
+    const { noir, backend } = await hre.noir.getCircuit("circuits");
+    console.log("noir backend initialized");
+    
+    const nil_pubkey = {
+        x: Array.from(toBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")),
+        y: Array.from(toBytes("0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"))
+    };
+    // Our Nil signature is a signature with r and s set to the generator point.
+    const nil_signature = Array.from(
+        toBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"));
+    const zero_address = new Array(20).fill(0);
+    
+    // Sort signatures by address - this is how the Safe contract does it.
+    const sortedSignatures = await Promise.all(signatures.map(async (sig) => {
+        const addr = await recoverAddress({hash: txHash, signature: sig});
+        return { sig, addr };
+    }));
+    sortedSignatures.sort((a, b) => a.addr.localeCompare(b.addr));
+    const sortedSigs = sortedSignatures.map(s => s.sig);
 
-        const nil_pubkey = {
-            x: Array.from(toBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")),
-            y: Array.from(toBytes("0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"))
+    let input;
+    if (privateOwners.length > 0) {
+        let ownersMerkleTree = makeOwnersMerkleTree(privateOwners);
+        const ownersIndicesProof: number[] = [];
+        const ownersPathsProof: any[][] = [];
+        for (var signature of sortedSignatures) {
+            const index= await ownersMerkleTree.indexOf(poseidon.hash([BigInt(signature.addr)]));
+            const addressProof= await ownersMerkleTree.createProof(index);
+            addressProof.siblings = addressProof.siblings.map((s) => s[0]);
+            ownersIndicesProof.push(Number("0b" + addressProof.pathIndices.join("")));
+            ownersPathsProof.push(addressProof.siblings);
+        }
+        input = {
+            threshold,
+            signers: padArray(signatures.map(async (sig) => extractCoordinates(
+                await recoverPublicKey({hash: txHash, signature: sig}))),
+                              4,
+                              nil_pubkey),
+            signatures: padArray(signatures.map(extractRSFromSignature), 4, nil_signature),
+            txn_hash: Array.from(toBytes(txHash as `0x${string}`)),
+            owners_root: toHex(ownersMerkleTree.root),
+            indices: padArray(ownersIndicesProof.map(indice => toHex(indice)), 4, "0x0"),
+            siblings: padArray(ownersPathsProof.map(paths => paths.map(path => toHex(path))), 4, ["0x0", "0x0", "0x0"])
         };
-        // Our Nil signature is a signature with r and s set to the generator point.
-        const nil_signature = Array.from(
-            toBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"));
-        const zero_address = new Array(20).fill(0);
-
-        // Sort signatures by address - this is how the Safe contract does it.
-        const sortedSignatures = await Promise.all(signatures.map(async (sig) => {
-            const addr = await recoverAddress({hash: txHash, signature: sig});
-            return { sig, addr };
-        }));
-        sortedSignatures.sort((a, b) => a.addr.localeCompare(b.addr));
-        const sortedSigs = sortedSignatures.map(s => s.sig);
-
-        const input = {
+    } else {
+        input = {
             threshold: await safe.getThreshold(),
             signers: padArray(await Promise.all(sortedSigs.map(async (sig) => {
                 const pubKey = await recoverPublicKey({
@@ -149,21 +127,22 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
                 });
                 return extractCoordinates(pubKey);
             })), 10, nil_pubkey),
-            signatures: padArray(sortedSigs.map(sig => extractRSFromSignature(sig)), 10, nil_signature),
+            signatures: padArray(sortedSigs.map(extractRSFromSignature), 10, nil_signature),
             txn_hash: Array.from(toBytes(txHash as `0x${string}`)),
             owners: padArray((await safe.getOwners()).map(addressToArray), 10, zero_address),
-        };
-        // Generate witness first
-        const { witness } = await noir.execute(input);
-
-        // Use backend to generate proof from witness
-        const proof = await backend.generateProof(witness, { keccak: true });
-
-        // Verify proof
-        const verification = await backend.verifyProof(proof, { keccak: true });
-        assert(verification, "Verification failed");
-        console.log("verification in JS succeeded");
-        return proof;
+        }
+    }
+    // Generate witness first
+    const { witness } = await noir.execute(input);
+    
+    // Use backend to generate proof from witness
+    const proof = await backend.generateProof(witness, { keccak: true });
+    
+    // Verify proof
+    const verification = await backend.verifyProof(proof, { keccak: true });
+    assert(verification, "Verification failed");
+    console.log("verification in JS succeeded");
+    return proof;
 }
 
 

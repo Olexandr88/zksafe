@@ -1,20 +1,21 @@
 import hre, { deployments } from 'hardhat';
 import { expect } from "chai";
 import assert = require('assert');
-import { WalletClient, PublicClient, zeroAddress, parseEther, encodeFunctionData, toHex, fromHex, concatHex, Account, toBytes, fromBytes, recoverAddress, recoverPublicKey, Hex, getContract } from "viem";
+import { WalletClient, PublicClient, zeroAddress, parseEther, encodeFunctionData, isBytes, isHex, toHex, fromHex, concatHex, Account, toBytes, fromBytes, recoverAddress, recoverPublicKey, Hex, getContract } from "viem";
 import Safe, {
     ContractNetworksConfig,
     PredictedSafeProps,
     SafeAccountConfig,
 } from '@safe-global/protocol-kit';
 import { MetaTransactionData, SafeSignature, SafeTransaction, OperationType, SafeTransactionData } from "@safe-global/types-kit";
-
+import { IMT } from '@zk-kit/imt';
+import { poseidon } from '@iden3/js-crypto';
 import ZkSafeModule from "../ignition/modules/zkSafe";
 
 import circuit from '../circuits/target/circuits.json';
 import { UltraHonkBackend } from '@aztec/bb.js';
 import { Noir } from '@noir-lang/noir_js';
-import { extractCoordinates, extractRSFromSignature, addressToArray, padArray, prove, proveTransactionSignatures } from '../zksafe/zksafe';
+import { extractCoordinates, extractRSFromSignature, addressToArray, padArray, prove, proveTransactionSignatures, makeOwnersMerkleTree } from '../zksafe/zksafeprivateowners';
 
 const DEFAULT_TRANSACTION = {
     to: zeroAddress,
@@ -57,6 +58,10 @@ async function getContractNetworks(chainId: number): Promise<ContractNetworksCon
     }
 }
 
+function accountAddresses(accounts: WalletClient[]) {
+    return accounts.map((account) => account.account?.address!);
+}
+
 describe("ZkSafeModule", function () {
 
     let namedAccounts: { [name: string]: string };
@@ -75,7 +80,9 @@ describe("ZkSafeModule", function () {
     let createSafeFromWalletAddress:  (wallet: WalletClient, safeAddress: string) => Promise<Safe>;
     let signTransactionFromUser: (wallet: WalletClient, safe: Safe, transaction: SafeTransaction) => Promise<SafeSignature>;
 
+    let privateOwners: WalletClient[];
     
+    let ownersMerkleTree: IMT;
 
     // New Noir Way
     let noir: Noir;
@@ -112,17 +119,21 @@ describe("ZkSafeModule", function () {
                 contractNetworks: await getContractNetworks(chainId),
             });
         }
+                                              
+        privateOwners = accounts.slice(3, 8);
+        console.log("Safe private Owners", privateOwners);
 
         const calldata = encodeFunctionData({
             abi: [{
                 name: 'enableModule',
                 type: 'function',
                 stateMutability: 'nonpayable',
-                inputs: [{ name: 'module', type: 'address' }],
+                inputs: [{ name: 'ownersRoot', type: 'bytes32' },
+                         { name: 'threshold', type: 'uint256' }],
                 outputs: []
             }],
             functionName: 'enableModule',
-            args: [zkSafeModule.address]
+            args: [toHex(makeOwnersMerkleTree(accountAddresses(privateOwners)).root), BigInt(threshold)],
         });
 
         safe = await Safe.init({
@@ -170,7 +181,6 @@ describe("ZkSafeModule", function () {
             return signedTransaction.getSignature(signerAddress!)!;
         };
 
-        // New Noir Way
         const circuits =  await hre.noir.getCircuit("circuits");
         noir = circuits.noir;
         backend = circuits.backend;
@@ -188,17 +198,21 @@ describe("ZkSafeModule", function () {
     it("Should succeed verification of a basic transaction", async function () {
 
         const nonce = await safe.getNonce();
-        const threshold = await safe.getThreshold();
+        const threshold = (await zkSafeModule.read.safeToConfig(safe)).threshold;
         const metaTransaction = makeSafeTransaction(nonce, {});
         const transaction = await safe.createTransaction({ transactions: [metaTransaction] });
         const txHash = await safe.getTransactionHash(transaction);
 
-        const sig1 = await signTransactionFromUser(accounts[0], safe, transaction);
-        const sig2 = await signTransactionFromUser(accounts[1], safe, transaction);
-        const sig3 = await signTransactionFromUser(accounts[2], safe, transaction);
+        const sig1 = await signTransactionFromUser(privateOwners[0], safe, transaction);
+        const sig2 = await signTransactionFromUser(privateOwners[1], safe, transaction);
+        const sig3 = await signTransactionFromUser(privateOwners[2], safe, transaction);
         const signatures = [sig2.data as Hex, sig3.data as Hex]; // sig1 is not included, threshold of 2 should be enough.
-        const proof = await proveTransactionSignatures(hre, safe, signatures, txHash as Hex);
-
+        const proof = await proveTransactionSignatures(hre,
+                                                       safe,
+                                                       signatures,
+                                                       txHash as Hex,
+                                                       accountAddresses(privateOwners),
+                                                       threshold);
         // Convert Uint8Array proof to hex string for contract call
         const proofHex = `0x${Buffer.from(proof.proof).toString('hex')}`;
         const directVerification = await verifierContract.read.verify([proofHex, proof.publicInputs]);

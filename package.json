@@ -39,6 +39,7 @@
     "@safe-global/safe-deployments": "^1.28.0",
     "@safe-global/safe-singleton-factory": "^1.0.43",
     "@safe-global/types-kit": "^1.0.4",
+    "@iden3/js-crypto": "^1.1.0",
     "@zk-kit/imt": "^2.0.0-beta.7",
     "add": "^2.0.6",
     "msgpackr": "^1.11.3",
