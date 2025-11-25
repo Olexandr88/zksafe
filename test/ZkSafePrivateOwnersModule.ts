@@ -1,254 +1,221 @@
-import hre, { ethers, network, deployments } from 'hardhat';
+import hre, { deployments } from 'hardhat';
 import { expect } from "chai";
-import { ZkSafeModule } from "../typechain-types";
+import assert = require('assert');
+import { WalletClient, PublicClient, zeroAddress, parseEther, encodeFunctionData, toHex, fromHex, concatHex, Account, toBytes, fromBytes, recoverAddress, recoverPublicKey, Hex, getContract } from "viem";
+import Safe, {
+    ContractNetworksConfig,
+    PredictedSafeProps,
+    SafeAccountConfig,
+} from '@safe-global/protocol-kit';
+import { MetaTransactionData, SafeSignature, SafeTransaction, OperationType, SafeTransactionData } from "@safe-global/types-kit";
+
+import ZkSafeModule from "../ignition/modules/zkSafe";
 
 import circuit from '../circuits/target/circuits.json';
-import { BarretenbergBackend } from '@noir-lang/backend_barretenberg';
+import { UltraHonkBackend } from '@aztec/bb.js';
 import { Noir } from '@noir-lang/noir_js';
-import { EthersAdapter, SafeFactory, SafeAccountConfig } from '@safe-global/protocol-kit';
-import Safe from '@safe-global/protocol-kit';
-import { SafeTransactionData } from '@safe-global/safe-core-sdk-types';
-import { IMT } from '@zk-kit/imt';
-import { poseidon } from '@iden3/js-crypto';
-import { isBytesLike, isHexString, toBeHex, Typed } from 'ethers';
+import { extractCoordinates, extractRSFromSignature, addressToArray, padArray, prove, proveTransactionSignatures } from '../zksafe/zksafe';
 
-async function getOwnerAdapters(fromIndex: number, toIndex: number): Promise<EthersAdapter[]> {
-    return (await ethers.getSigners()).slice(fromIndex, toIndex).map((signer) => new EthersAdapter({ ethers, signerOrProvider: signer }));
+const DEFAULT_TRANSACTION = {
+    to: zeroAddress,
+    value: "0x0",
+    data: "0x",
+    operation: 0,
+    // default fields below
+    safeTxGas: "0x0",
+    baseGas: "0x0",
+    gasPrice: "0x0",
+    gasToken: zeroAddress,
+    refundReceiver: zeroAddress,
 }
 
-/// Extract x and y coordinates from a serialized ECDSA public key.
-function extractCoordinates(serializedPubKey: string): { x: number[], y: number[] } {
-    // Ensure the key starts with '0x04' which is typical for an uncompressed key.
-    if (!serializedPubKey.startsWith('0x04')) {
-        throw new Error('The public key does not appear to be in uncompressed format.');
+function makeSafeTransaction(nonce: number, fields: Partial<SafeTransactionData>) {
+    return { nonce, ...DEFAULT_TRANSACTION, ...fields }
+}
+
+async function getContractNetworks(chainId: number): Promise<ContractNetworksConfig> {
+    const deploymentAddresses = Object.fromEntries(
+        await Promise.all(
+            Object.entries({
+                safeSingletonAddress: "SafeL2",
+                safeProxyFactoryAddress: "SafeProxyFactory",
+                multiSendAddress: "MultiSend",
+                multiSendCallOnlyAddress:  "MultiSendCallOnly",
+                fallbackHandlerAddress: "CompatibilityFallbackHandler",
+                signMessageLibAddress:  "SignMessageLib",
+                createCallAddress:  "CreateCall",
+            }).map(async ([key, value]) => [key, (await deployments.get(value)).address])
+        )
+    )
+    return {
+        [chainId.toString()]: {
+            ...deploymentAddresses,
+            simulateTxAccessorAddress: zeroAddress,
+            safeWebAuthnSignerFactoryAddress: zeroAddress,
+            safeWebAuthnSharedSignerAddress: zeroAddress,
+        }
     }
-
-    // The next 64 characters after the '0x04' are the x-coordinate.
-    let xHex = serializedPubKey.slice(4, 68);
-
-    // The following 64 characters are the y-coordinate.
-    let yHex = serializedPubKey.slice(68, 132);
-
-    // Convert the hex string to a byte array.
-    let xBytes = Array.from(Buffer.from(xHex, 'hex'));
-    let yBytes = Array.from(Buffer.from(yHex, 'hex'));
-    return { x: xBytes, y: yBytes };
 }
 
-function extractRSFromSignature(signatureHex: string): number[] {
-    if (signatureHex.length !== 132 || !signatureHex.startsWith('0x')) {
-        throw new Error('Signature should be a 130-character hex string starting with 0x.');
-    }
-    return Array.from(Buffer.from(signatureHex.slice(2, 130), 'hex'));
-}
+describe("ZkSafeModule", function () {
 
-function addressToArray(address: string): number[] {
-    if (address.length !== 42 || !address.startsWith('0x')) {
-        throw new Error('Address should be a 40-character hex string starting with 0x.');
-    }
-    return Array.from(ethers.getBytes(address));
-}
+    let namedAccounts: { [name: string]: string };
+    let accounts: WalletClient[];
+    let safeAddress: `0x${string}`;
+    let zkSafeModuleAddress: `0x${string}`;
 
-function padArray(arr: any[], length: number, fill: any = 0) {
-    return arr.concat(Array(length - arr.length).fill(fill));
-}
+    let publicClient: PublicClient;
+    let walletClient: WalletClient;
+    let usersWalletClient: WalletClient;
 
-describe("ZkSafeModulePrivateOwners", function () {
-    let ownerAdapters: EthersAdapter[];
-    let zkSafeModule: ZkSafeModule;
     let safe: Safe;
+    let zkSafeModule: any;
     let verifierContract: any;
 
-    let privateOwnerAdapters: EthersAdapter[];
-    let ownersMerkleTree:  IMT;
-    let threshold = 2;
+    let createSafeFromWalletAddress:  (wallet: WalletClient, safeAddress: string) => Promise<Safe>;
+    let signTransactionFromUser: (wallet: WalletClient, safe: Safe, transaction: SafeTransaction) => Promise<SafeSignature>;
+
+    
 
     // New Noir Way
     let noir: Noir;
-    let backend: BarretenbergBackend;
-    let correctProof: any;
+    let backend: UltraHonkBackend;
 
     before(async function () {
-        ownerAdapters = await getOwnerAdapters(0, 3);
-        // Deploy Safe
-        let owners = await Promise.all(ownerAdapters.map((oa) => (oa.getSigner()?.getAddress() as string)));
-        console.log("Safe owners", owners);
-
         await deployments.fixture();
 
-        const deployedSafe = await deployments.get("GnosisSafeL2");
-        const deployedSafeFactory = await deployments.get("GnosisSafeProxyFactory");
-        const deployedMultiSend = await deployments.get("MultiSend");
-        const deployedMultiSendCallOnly = await deployments.get("MultiSendCallOnly");
-        const deployedCompatibilityFallbackHandler = await deployments.get("CompatibilityFallbackHandler");
-        const deployedSignMessageLib = await deployments.get("SignMessageLib");
-        const deployedCreateCall = await deployments.get("CreateCall");
-//        const deployedSimulateTxAccessor = await deployments.get("SimulateTxAccessor");
-        const chainId: number = await ownerAdapters[0].getChainId();
-        const chainIdStr = chainId.toString();
-        console.log("chainId: ", chainIdStr);
-        const contractNetworks = {
-            [chainIdStr]: {
-                    safeSingletonAddress: deployedSafe.address,
-                    safeProxyFactoryAddress: deployedSafeFactory.address,
-                    multiSendAddress: deployedMultiSend.address,
-                    multiSendCallOnlyAddress: deployedMultiSendCallOnly.address,
-                    fallbackHandlerAddress: deployedCompatibilityFallbackHandler.address,
-                    signMessageLibAddress: deployedSignMessageLib.address,
-                    createCallAddress: deployedCreateCall.address,
-                    simulateTxAccessorAddress: ethers.ZeroAddress,
-            }
-        };
-        const safeFactory = await SafeFactory.create({ ethAdapter: ownerAdapters[0], contractNetworks });
-        const safeAccountConfig: SafeAccountConfig =  {
-            owners: owners,
-            threshold: 2,
+        const result = await hre.ignition.deploy(ZkSafeModule);
+        zkSafeModule = result.zkSafeModule;
+        verifierContract = result.verifier;
+
+        // Get deployer account
+        accounts = await hre.viem.getWalletClients();
+        publicClient = await hre.viem.getPublicClient();
+
+        // Configure for consistent gas estimation
+        const originalEstimateGas = publicClient.estimateGas;
+        publicClient.estimateGas = async (args: any) => {
+            // Use a cached/fixed value for gas estimation
+            return BigInt("0x1000000");
         };
 
-        const verifierContractFactory = await ethers.getContractFactory("UltraVerifier");
-        verifierContract = await verifierContractFactory.deploy();
-        verifierContract.waitForDeployment();
-        console.log("verifierContract", await verifierContract.getAddress());
+        namedAccounts = await hre.getNamedAccounts();
+        walletClient = accounts[0];
+        usersWalletClient = accounts[1];
+        const chainId = walletClient.chain?.id ?? 1;
 
-        const ZkSafeModule = await ethers.getContractFactory("ZkSafeModule");
-        zkSafeModule = await ZkSafeModule.deploy(await verifierContract.getAddress());
-        zkSafeModule.waitForDeployment();
-        const zkSafeModuleAddress = await zkSafeModule.getAddress();
-        console.log("zkSafeModule: ", zkSafeModuleAddress);
+        createSafeFromWalletAddress = async (wallet: WalletClient, safeAddress: string): Promise<Safe> => {
+            return await Safe.init({
+                provider: wallet.transport,
+                signer: wallet.account?.address,
+                safeAddress,
+                contractNetworks: await getContractNetworks(chainId),
+            });
+        }
 
-        privateOwnerAdapters = await getOwnerAdapters(3, 8);
-        // Deploy Safe
-        let privateOwners = await Promise.all(privateOwnerAdapters.map((oa) => (oa.getSigner()?.getAddress() as string)));
-        console.log("Safe private owners", privateOwners);
-        ownersMerkleTree = new IMT(poseidon.hash, 3, 0, 2)
-        ownersMerkleTree.insert(poseidon.hash([BigInt(privateOwners[0])]))
-        ownersMerkleTree.insert(poseidon.hash([BigInt(privateOwners[1])]))
-        ownersMerkleTree.insert(poseidon.hash([BigInt(privateOwners[2])]))
-        ownersMerkleTree.insert(poseidon.hash([BigInt(privateOwners[3])]))
-        ownersMerkleTree.insert(poseidon.hash([BigInt(privateOwners[4])]))    
+        const calldata = encodeFunctionData({
+            abi: [{
+                name: 'enableModule',
+                type: 'function',
+                stateMutability: 'nonpayable',
+                inputs: [{ name: 'module', type: 'address' }],
+                outputs: []
+            }],
+            functionName: 'enableModule',
+            args: [zkSafeModule.address]
+        });
 
-        safeAccountConfig.to = zkSafeModuleAddress;
+        safe = await Safe.init({
+            provider: walletClient.transport,
+            predictedSafe: {
+                safeAccountConfig: {
+                    owners: [(accounts[0].account as Account).address,
+                               (accounts[1].account as Account).address,
+                               (accounts[2].account as Account).address],
+                    threshold: 1,
+                    to: zkSafeModule.address,
+                    data: calldata,
+                }
+            },
+            contractNetworks: await getContractNetworks(chainId),
+        });
 
-        const iface = new ethers.Interface(["function enableModule(bytes32 ownersRoot, uint256 threshold)"]);
-        safeAccountConfig.data = iface.encodeFunctionData("enableModule", [toBeHex(ownersMerkleTree.root), threshold]);
-        //Typed.bytes32(toBeHex(merkleTree.root))
+        safeAddress = await safe.getAddress() as `0x${string}`;
+        const deploymentTransaction = await safe.createSafeDeploymentTransaction();
 
-        safe = await safeFactory.deploySafe({ safeAccountConfig });
-        const safeAddress = await safe.getAddress();
-        console.log("safeAddress", safeAddress);
+        const transactionHash = await walletClient.sendTransaction({
+            account: walletClient.account as Account,
+            chain: walletClient.chain,
+            to: deploymentTransaction.to,
+            value: parseEther(deploymentTransaction.value),
+            data: deploymentTransaction.data as `0x${string}`,
+        });
 
-        // [api, acirComposer, acirBuffer, acirBufferUncompressed] = await initCircuits();
+        const transactionReceipt = await publicClient.waitForTransactionReceipt({
+            hash: transactionHash
+        });
+
+        expect(transactionReceipt.status).to.be.equal("success");
+        console.log("Safe created at: ", safeAddress);
+        expect(await safe.isSafeDeployed()).to.be.true;
+
+        // Now when the Safe is deployed, reinitialize protocol-kit Safe wrapper as
+        // initialized Safe.
+        safe = await createSafeFromWalletAddress(usersWalletClient, safeAddress);
+
+        signTransactionFromUser = async (wallet: WalletClient, safe: Safe, transaction: SafeTransaction): Promise<SafeSignature> => {
+            const userSafe = await createSafeFromWalletAddress(wallet, await safe.getAddress());
+            const signerAddress = await userSafe.getSafeProvider().getSignerAddress();
+            const signedTransaction = await userSafe.signTransaction(transaction);
+            return signedTransaction.getSignature(signerAddress!)!;
+        };
 
         // New Noir Way
-        backend = new BarretenbergBackend(circuit);
-        noir = new Noir(circuit);
-        console.log("noir backend initialzied");
+        const circuits =  await hre.noir.getCircuit("circuits");
+        noir = circuits.noir;
+        backend = circuits.backend;
+//        await noir.init();
     });
 
+    function readjustSigFromEthSign(signature: SafeSignature): Hex {
+        const sig = toBytes(signature.data);
+        if (sig[64] > 30) {
+           sig[64] -= 4;
+        }
+        return fromBytes(sig, 'hex');
+    }
 
     it("Should succeed verification of a basic transaction", async function () {
 
         const nonce = await safe.getNonce();
-        const safeTransactionData : SafeTransactionData = {
-            to: ethers.ZeroAddress,
-            value: "0x0",
-            data: "0x",
-            operation: 0,
-            // default fields below
-            safeTxGas: "0x0",
-            baseGas: "0x0",
-            gasPrice: "0x0",
-            gasToken: ethers.ZeroAddress,
-            refundReceiver: ethers.ZeroAddress,
-            nonce, 
-        }
-        console.log("transaction", safeTransactionData);
-        const transaction = await safe.createTransaction({ transactions: [safeTransactionData] });
+        const threshold = await safe.getThreshold();
+        const metaTransaction = makeSafeTransaction(nonce, {});
+        const transaction = await safe.createTransaction({ transactions: [metaTransaction] });
         const txHash = await safe.getTransactionHash(transaction);
-        console.log("txHash", txHash);
 
-        // Let's generate three signatures for the owners of the Safe.
-        // ok, our siganture is a EIP-712 signature, so we need to sign the hash of the transaction.
-        let safeTypedData = {
-            safeAddress: await safe.getAddress(),
-            safeVersion: await safe.getContractVersion(),
-            chainId: await ownerAdapters[0].getChainId(),
-            safeTransactionData: safeTransactionData,
-        }; 
-        const sig1 = await privateOwnerAdapters[0].signTypedData(safeTypedData);
-        const sig2 = await privateOwnerAdapters[1].signTypedData(safeTypedData);
-        const sig3 = await privateOwnerAdapters[2].signTypedData(safeTypedData);
+        const sig1 = await signTransactionFromUser(accounts[0], safe, transaction);
+        const sig2 = await signTransactionFromUser(accounts[1], safe, transaction);
+        const sig3 = await signTransactionFromUser(accounts[2], safe, transaction);
+        const signatures = [sig2.data as Hex, sig3.data as Hex]; // sig1 is not included, threshold of 2 should be enough.
+        const proof = await proveTransactionSignatures(hre, safe, signatures, txHash as Hex);
 
-        const nil_pubkey = {
-            x: Array.from(ethers.getBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")),
-            y: Array.from(ethers.getBytes("0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"))
-        };
-        // Our Nil signature is a signature with r and s set to 
-        const nil_signature = Array.from(
-            ethers.getBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"));
-        const zero_address = new Array(20).fill(0);
+        // Convert Uint8Array proof to hex string for contract call
+        const proofHex = `0x${Buffer.from(proof.proof).toString('hex')}`;
+        const directVerification = await verifierContract.read.verify([proofHex, proof.publicInputs]);
 
-        const signatures = [sig2, sig3]; // sig1 is not included, threshold of 2 should be enough.
-        
-        // Sort signatures by address - this is how the Safe contract does it.
-        signatures.sort((sig1, sig2) => ethers.recoverAddress(txHash, sig1).localeCompare(ethers.recoverAddress(txHash, sig2)));
-
-        const ownersIndicesProof: number[] = []
-        const ownersPathsProof: any[][] = []
-        for (var signature of signatures) {
-            const recoveredAddress = ethers.recoverAddress(txHash,signature)
-            const index= await ownersMerkleTree.indexOf(poseidon.hash([BigInt(recoveredAddress)]));
-            const addressProof= await ownersMerkleTree.createProof(index);
-            addressProof.siblings = addressProof.siblings.map((s) => s[0])
-            await ownersIndicesProof.push(Number("0b" + await addressProof.pathIndices.join("")))
-            await ownersPathsProof.push(addressProof.siblings)
-        }
-
-        const input = {
-            threshold: toBeHex(threshold),
-            signers: padArray(signatures.map((sig) => extractCoordinates(ethers.SigningKey.recoverPublicKey(txHash, sig))), 4, nil_pubkey),
-            signatures: padArray(signatures.map(extractRSFromSignature), 4, nil_signature),
-            txn_hash: Array.from(ethers.getBytes(txHash)),
-            owners_root: toBeHex(ownersMerkleTree.root),
-            indices: padArray(ownersIndicesProof.map(indice => toBeHex(indice)), 4, "0x0"),
-            siblings: padArray(ownersPathsProof.map(paths => paths.map(path => toBeHex(path))), 4, ["0x0", "0x0", "0x0"])
-        };
-        console.log('logs', 'Generating witness... ⌛');
-        //console.log('input: ', input);
-        const { witness, returnValue } = await noir.execute(input);
-        console.log('logs', 'Generating proof... ✅');
-        correctProof = await backend.generateProof(witness);
-        console.log("proof", correctProof);
-
-        const isValid = await backend.verifyProof(correctProof);
-        expect(isValid).to.be.true;
-        console.log("verification in JS succeeded");
-
-
-        const safeAddress = await safe.getAddress();
-        //const directVerification = await verifierContract.verify(correctProof["proof"], [...correctProof["publicInputs"].values()]);
-        const directVerification = await verifierContract.verify(correctProof.proof, [...correctProof.publicInputs]);
-        console.log("directVerification", directVerification);
-
-        const contractVerification = await zkSafeModule.verifyZkSafeTransaction(safeAddress, txHash, correctProof.proof);
-        console.log("contractVerification", contractVerification);
-
-        console.log("safe: ", safe);
-        console.log("transaction: ", transaction);
-        const txn = await zkSafeModule.sendZkSafeTransaction(
+        const contractVerification = await zkSafeModule.read.verifyZkSafeTransaction([await safe.getAddress(), txHash, proofHex]);
+        const txn = await zkSafeModule.write.sendZkSafeTransaction([
             safeAddress,
-            { to: transaction["data"]["to"],
-              value: BigInt(transaction["data"]["value"]),
-              data: transaction["data"]["data"],
-              operation: transaction["data"]["operation"],
+            { to: transaction.data.to,
+              value: BigInt(transaction.data.value),
+              data: transaction.data.data,
+              operation: transaction.data.operation,
             },
-            correctProof.proof,
-            { gasLimit: 2000000 }
-        );
+            proofHex, // Use truncated proof for transaction
+        ]);
 
-        let receipt = await txn.wait();
-        console.log("receipt: ", receipt);
-        expect(txn).to.not.be.reverted;
+        const receipt = await publicClient.waitForTransactionReceipt({ hash: txn });
+        expect(receipt.status).to.equal('success');
         let newNonce = await safe.getNonce();
         expect(newNonce).to.equal(nonce + 1);
     });
@@ -262,17 +229,15 @@ describe("ZkSafeModulePrivateOwners", function () {
             operation: 0,
         }
 
-        const txn = zkSafeModule.sendZkSafeTransaction(
-            "0x0000000000000000000000000000000000000000",
-            transaction,
-            "0x", // proof
-        );
-
-        expect(txn).to.be.reverted;
+        await expect(zkSafeModule.write.sendZkSafeTransaction([
+          "0x0000000000000000000000000000000000000000",
+          transaction,
+          "0x", // empty proof
+        ])).to.be.rejected;
     });
 
-    xit("Should fail a basic transaction with a wrong proof", async function () {
-        
+    it("Should fail a basic transaction with a wrong proof", async function () {
+
         const transaction  = {
             to: "0x0000000000000000000000000000000000000000",
             value: 0,
@@ -280,15 +245,10 @@ describe("ZkSafeModulePrivateOwners", function () {
             operation: 0,
         }
 
-        const txn = await zkSafeModule.sendZkSafeTransaction(
+        await expect(zkSafeModule.write.sendZkSafeTransaction([
             await safe.getAddress(),
             transaction,
-            "0x0000000000000000", // proof
-            { gasLimit: 2000000 }
-        );
-
-        expect(txn).to.be.revertedWith("Invalid proof");
+            "0x" + "0".repeat(2 * 440 * 32), // invalid proof (440 * 32 zeros)
+        ])).to.be.rejectedWith(/custom error/);
     });
-
 });
-

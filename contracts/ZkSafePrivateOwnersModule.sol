@@ -2,17 +2,18 @@
 
 pragma solidity ^0.8.12;
 
-import {UltraVerifier} from "../circuits/contract/circuits/plonk_vk.sol";
-import "@gnosis.pm/safe-contracts/contracts/common/Enum.sol";
-import "@gnosis.pm/safe-contracts/contracts/GnosisSafe.sol";
+import {HonkVerifier} from "../noir/target/circuits.sol";
+import "@safe-global/safe-contracts/contracts/common/Enum.sol";
+import "@safe-global/safe-contracts/contracts/Safe.sol";
 import "hardhat/console.sol";
+
 
 /* @title ZkSafePrivateOwnersModule
  * @dev This contract implements a module for Safe that allows for zk-SNARK verification of transactions,
  *      hiding the owners of the Safe.
  */
 contract ZkSafePrivateOwnersModule {
-    UltraVerifier verifier;
+    HonkVerifier verifier;
     address immutable zkSafeModuleAddress;
 
     struct zkSafeConfig {
@@ -22,18 +23,18 @@ contract ZkSafePrivateOwnersModule {
         uint256 threshold;
     }
 
-    mapping(GnosisSafe => zkSafeConfig) public safeToConfig;
+    mapping(Safe => zkSafeConfig) public safeToConfig;
 
-    constructor(UltraVerifier _verifier) {
+    constructor(HonkVerifier _verifier) {
         verifier = _verifier;
         zkSafeModuleAddress = address(this);
     }
 
     function zkSafeModuleVersion() public pure returns (string memory) {
-        return "ZkSafeModule/v0.0.1";
+        return "ZkSafeModule/v1.0.1";
     }
 
-    // Basic representation of a Gnosis Safe transaction supported by zkSafe.
+    // Basic representation of a Safe{Wallet} transaction supported by zkSafe.
     struct Transaction {
         address to;
         uint256 value;
@@ -42,16 +43,16 @@ contract ZkSafePrivateOwnersModule {
     }
 
     /*
-     * @dev Enables a module on a Gnosis Safe contract.
+     * @dev Enables a module on a Safe contract.
      * @param ownersRoot Owners Merkle tree root.
      * @param threshold Number of required confirmations for a zkSafe transaction.
     */
     function enableModule(bytes32 ownersRoot, uint256 threshold) external {
         address payable thisAddr = payable(address(this));
-        GnosisSafe(thisAddr).enableModule(zkSafeModuleAddress);
+        Safe(thisAddr).enableModule(zkSafeModuleAddress);
         
         // Initialize zkMultisg config
-        ZkSafeModule(zkSafeModuleAddress).updateZkMultisigConf(
+        ZkSafePrivateOwnersModule(zkSafeModuleAddress).updateZkMultisigConf(
             ownersRoot, threshold
         );
     }
@@ -61,7 +62,6 @@ contract ZkSafePrivateOwnersModule {
      * @param module The address of the module to enable.
      */
     function updateZkMultisigConf(bytes32 ownersRoot, uint256 threshold) external {
-        //require(threshold > 0, "Threshold must be greater than 0");
         require(threshold < 256, "Threshold must be less than 256");
 
         safeToConfig[GnosisSafe(payable(msg.sender))] = zkSafeConfig({
@@ -87,19 +87,18 @@ contract ZkSafePrivateOwnersModule {
     }
 
     /*
-     * @dev Verifies a zk-SNARK proof for a Gnosis Safe transaction.
+     * @dev Verifies a zk-SNARK proof for a Safe transaction.
      * @param safeContract The address of the Gnosis Safe contract.
      * @param txHash The hash of the transaction to be verified.
      * @param proof The zk-SNARK proof.
      * @return True if the proof is valid, false otherwise.
      */
     function verifyZkSafeTransaction(
-        address safeContract,
+        Safe safeContract,
         bytes32 txHash,
         bytes calldata proof
     ) public view returns (bool) {
-
-        zkSafeConfig memory currentSageConfig = safeToConfig[GnosisSafe(payable(safeContract))];
+        zkSafeConfig memory currentSafeConfig = safeToConfig[safeContract];
         
         // Construct the input to the circuit.
         // We need 34 array position for public inputs.
@@ -107,7 +106,7 @@ contract ZkSafePrivateOwnersModule {
 
   
         // Threshold       
-        publicInputs[0] = bytes32(uint256(currentSageConfig.threshold));
+        publicInputs[0] = bytes32(uint256(currentSafeConfig.threshold));
 
         // Each byte of the transaction hash is given as a separate uint256 value.
         // TODO: this is super inefficient, fix by making the circuit take compressed inputs.
@@ -116,26 +115,26 @@ contract ZkSafePrivateOwnersModule {
         }
 
         // ownersRoot
-        publicInputs[33] = bytes32(currentSageConfig.ownersRoot);
+        publicInputs[33] = bytes32(currentSafeConfig.ownersRoot);
 
         // Get the owners of the Safe by calling into the Safe contract.
         return verifier.verify(proof, publicInputs);
     }
 
     /*
-     * @dev Sends a transaction to a Gnosis Safe contract.
-     * @param safeContract The address of the Gnosis Safe contract.
+     * @dev Sends a transaction to a Safe contract.
+     * @param safeContract The address of the Safe contract.
      * @param transaction The transaction to be sent.
      * @param proof The zk-SNARK proof.
      * @return True if the transaction was successful, false otherwise.
      */
     function sendZkSafeTransaction(
-        GnosisSafe safeContract,
+        Safe safeContract,
         // The Safe address to which the transaction will be sent.
         Transaction calldata transaction,
         // The proof blob.
         bytes calldata proof
-    ) public virtual returns (bool) {
+    ) public virtual returns (bool result) {
         uint256 nonce = safeContract.nonce();
         bytes32 txHash = keccak256(
             safeContract.encodeTransactionData(
@@ -170,7 +169,7 @@ contract ZkSafePrivateOwnersModule {
         require(safeContract.nonce() == nonce + 1, "Nonce not increased");
 
         // All clean: can run the    
-        bool result = safeContract.execTransactionFromModule(
+        result = safeContract.execTransactionFromModule(
             transaction.to,
             transaction.value,
             transaction.data,
