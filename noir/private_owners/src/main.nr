@@ -34,23 +34,25 @@ fn hash_values(leaves: [Field; 2]) -> Field {
     hash
 }
 
-fn merkle_tree_root<N>(leaf: Field, path_indices: Field, siblings: ([Field; N])) -> Field {
-    let index_bits = path_indices.to_be_bits(N);
+fn merkle_tree_root<let N: u32>(leaf: Field, path_index: u32, siblings: [Field; N]) -> Field {
     let mut current = leaf;
+    let mut index = path_index;
+
     for i in 0..N {
-        let path_bit = index_bits[i] as bool;
+        let path_bit = (index & 1) == 1;
         let (hash_left, hash_right) = if path_bit {
             (siblings[i], current)
         } else {
             (current, siblings[i])
         };
         current = hash_values([hash_left, hash_right]);
+        index = index >> 1;
     }
     current
 }
 
 /// Verify if the signatures are valid and the signers are in the owners list.
-fn verify_signers<T>(threshold: u8, signers: [PubKey; T], signatures: [Signature; T], txn_hash: Hash, owners_root: Field, indices: [Field; T], siblings: [[Field; TREE_SIZE]; T]) {
+fn verify_signers<let T: u32>(threshold: u8, signers: [PubKey; T], signatures: [Signature; T], txn_hash: Hash, owners_root: Field, indices: [Field; T], siblings: [[Field; TREE_SIZE]; T]) {
     let mut curr_owner = [0; 20];
     let mut num_verified_signatures = 0;
     // We use the generator point of the secp256k1 curve as the NIL value.
@@ -86,7 +88,7 @@ fn verify_signers<T>(threshold: u8, signers: [PubKey; T], signatures: [Signature
             }
 
             let address_hash = poseidon::bn254::hash_1([result]);
-            assert(owners_root == merkle_tree_root(address_hash, indices[i], siblings[i]));
+            assert(owners_root == merkle_tree_root(address_hash, indices[i] as u32, siblings[i]));
 
             curr_owner = address;
             num_verified_signatures += 1;

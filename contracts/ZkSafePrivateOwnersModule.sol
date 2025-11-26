@@ -2,7 +2,8 @@
 
 pragma solidity ^0.8.12;
 
-import {HonkVerifier} from "../noir/target/circuits.sol";
+import {HonkVerifier as PublicOwnersVerifier} from "../noir/target/Verifier.sol";
+import {HonkVerifier as PrivateOwnersVerifier} from "../noir/target/PrivateOwnersVerifier.sol";
 import "@safe-global/safe-contracts/contracts/common/Enum.sol";
 import "@safe-global/safe-contracts/contracts/Safe.sol";
 import "hardhat/console.sol";
@@ -13,7 +14,8 @@ import "hardhat/console.sol";
  *      hiding the owners of the Safe.
  */
 contract ZkSafePrivateOwnersModule {
-    HonkVerifier verifier;
+    PublicOwnersVerifier publicVerifier;  // Verifier for the public owners circuit.
+    PrivateOwnersVerifier privateVerifier;  // Verifier for the private owners circuit.
     address immutable zkSafeModuleAddress;
 
     struct zkSafeConfig {
@@ -25,13 +27,14 @@ contract ZkSafePrivateOwnersModule {
 
     mapping(Safe => zkSafeConfig) public safeToConfig;
 
-    constructor(HonkVerifier _verifier) {
-        verifier = _verifier;
+    constructor(PublicOwnersVerifier _publicVerifier, PrivateOwnersVerifier _privateVerifier) {
+        publicVerifier = _publicVerifier;
+        privateVerifier = _privateVerifier;
         zkSafeModuleAddress = address(this);
     }
 
     function zkSafeModuleVersion() public pure returns (string memory) {
-        return "ZkSafeModule/v1.0.1";
+        return "ZkSafeModule/v2.0.0";
     }
 
     // Basic representation of a Safe{Wallet} transaction supported by zkSafe.
@@ -50,7 +53,7 @@ contract ZkSafePrivateOwnersModule {
     function enableModule(bytes32 ownersRoot, uint256 threshold) external {
         address payable thisAddr = payable(address(this));
         Safe(thisAddr).enableModule(zkSafeModuleAddress);
-        
+
         // Initialize zkMultisg config
         ZkSafePrivateOwnersModule(zkSafeModuleAddress).updateZkMultisigConf(
             ownersRoot, threshold
@@ -64,7 +67,7 @@ contract ZkSafePrivateOwnersModule {
     function updateZkMultisigConf(bytes32 ownersRoot, uint256 threshold) external {
         require(threshold < 256, "Threshold must be less than 256");
 
-        safeToConfig[GnosisSafe(payable(msg.sender))] = zkSafeConfig({
+        safeToConfig[Safe(payable(msg.sender))] = zkSafeConfig({
             ownersRoot: ownersRoot,
             threshold: threshold
         });
@@ -87,38 +90,64 @@ contract ZkSafePrivateOwnersModule {
     }
 
     /*
-     * @dev Verifies a zk-SNARK proof for a Safe transaction.
+     * @dev Verifies a zk-SNARK proof for a Safe transaction with private owners.
      * @param safeContract The address of the Gnosis Safe contract.
      * @param txHash The hash of the transaction to be verified.
-     * @param proof The zk-SNARK proof.
+     * @param proof The zk-SNARK proof for the private owners circuit.
      * @return True if the proof is valid, false otherwise.
      */
     function verifyZkSafeTransaction(
         Safe safeContract,
         bytes32 txHash,
+        bool usePrivateOwners,
         bytes calldata proof
     ) public view returns (bool) {
         zkSafeConfig memory currentSafeConfig = safeToConfig[safeContract];
-        
-        // Construct the input to the circuit.
-        // We need 34 array position for public inputs.
-        bytes32[] memory publicInputs = new bytes32[](1 + 32 + 1);
 
-  
-        // Threshold       
+        // Construct the input to the circuit.
+        uint inputsSize = usePrivateOwners ?
+            (1 + 32 + 1)  // threshold + txHash + ownersRoot
+            :
+            (1 + 32 + 10 * 20); // threshold + txHash + owners (max 10 owners, each unpacked into 20 bytes)
+        bytes32[] memory publicInputs = new bytes32[](inputsSize);
+
+        // Threshold
         publicInputs[0] = bytes32(uint256(currentSafeConfig.threshold));
 
         // Each byte of the transaction hash is given as a separate uint256 value.
-        // TODO: this is super inefficient, fix by making the circuit take compressed inputs.
         for (uint256 i = 0; i < 32; i++) {
             publicInputs[i+1] = bytes32(uint256(uint8(txHash[i])));
         }
 
-        // ownersRoot
-        publicInputs[33] = bytes32(currentSafeConfig.ownersRoot);
+        if (usePrivateOwners) {
+            // ownersRoot
+            publicInputs[33] = bytes32(currentSafeConfig.ownersRoot);
+            return privateVerifier.verify(proof, publicInputs);
+        } else {
 
-        // Get the owners of the Safe by calling into the Safe contract.
-        return verifier.verify(proof, publicInputs);
+            // Get the owners of the Safe by calling into the Safe contract.
+            address[] memory owners = safeContract.getOwners();
+            require(owners.length > 0, "No owners");
+            require(owners.length <= 10, "Too many owners");
+
+            // Each Address is unpacked into 20 separate bytes, each of which is given as a separate uint256 value.
+            // TODO: this is super inefficient, fix by making the circuit take compressed inputs.
+            for (uint256 i = 0; i < owners.length; i++) {
+                for (uint256 j = 0; j < 20; j++) {
+                    publicInputs[i * 20 + j + 33] = bytes32(
+                                                            uint256(uint8(bytes20(owners[i])[j]))
+                    );
+                }
+            }
+            for (uint256 i = owners.length; i < 10; i++) {
+                for (uint256 j = 0; j < 20; j++) {
+                    publicInputs[i * 20 + j + 33] = bytes32(0);
+                }
+            }
+
+            // Get the owners of the Safe by calling into the Safe contract.
+            return publicVerifier.verify(proof, publicInputs);
+        }
     }
 
     /*
@@ -132,6 +161,8 @@ contract ZkSafePrivateOwnersModule {
         Safe safeContract,
         // The Safe address to which the transaction will be sent.
         Transaction calldata transaction,
+        // Whether to use the private owners verifier
+        bool usePrivateOwners,
         // The proof blob.
         bytes calldata proof
     ) public virtual returns (bool result) {
@@ -153,7 +184,7 @@ contract ZkSafePrivateOwnersModule {
                 nonce
             )
         );
-        require(verifyZkSafeTransaction(address(safeContract), txHash, proof), "Invalid proof");
+        require(verifyZkSafeTransaction(safeContract, txHash, usePrivateOwners, proof), "Invalid proof");
         // All checks are successful, can execute the transaction.
 
         // Safe doesn't increase the nonce for module transactions, so we need to take care of that.
@@ -168,7 +199,7 @@ contract ZkSafePrivateOwnersModule {
         // must check this, as it can fail on an incompatible Safe contract version.
         require(safeContract.nonce() == nonce + 1, "Nonce not increased");
 
-        // All clean: can run the    
+        // All clean: can run the transaction.
         result = safeContract.execTransactionFromModule(
             transaction.to,
             transaction.value,
