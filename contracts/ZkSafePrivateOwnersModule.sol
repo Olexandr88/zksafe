@@ -54,10 +54,11 @@ contract ZkSafePrivateOwnersModule {
         address payable thisAddr = payable(address(this));
         Safe(thisAddr).enableModule(zkSafeModuleAddress);
 
-        // Initialize zkMultisg config
-        ZkSafePrivateOwnersModule(zkSafeModuleAddress).updateZkMultisigConf(
-            ownersRoot, threshold
-        );
+        if (ownersRoot != bytes32(0)) {
+            // Initialize zkMultisg config
+            ZkSafePrivateOwnersModule(zkSafeModuleAddress)
+                .updateZkMultisigConf(ownersRoot, threshold);
+        }
     }
 
      /*

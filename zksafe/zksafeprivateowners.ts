@@ -227,7 +227,7 @@ export async function sign(hre: HardhatRuntimeEnvironment, safeAddr: string, to:
     console.log("Signature: ", safeSig.data);
 }
 
-export async function createZkSafe(hre: HardhatRuntimeEnvironment, owners: string[], threshold: number) {
+export async function createZkSafe(hre: HardhatRuntimeEnvironment, owners: string[], threshold: number, zkSafeModulePrivateOwners: string[], zkSafeModuleThreshold: number) {
     // Get wallet client
     const pk = vars.get("DEPLOYER_PRIVATE_KEY") as string;
     const account = privateKeyToAccount(ensureHexPrefix(pk));
@@ -244,17 +244,22 @@ export async function createZkSafe(hre: HardhatRuntimeEnvironment, owners: strin
 
     console.log("zkSafeModule: ", zkSafeModule.address);
 
+    const ownersRoot = zkSafeModulePrivateOwners.length > 0 ?
+          hre.viem.toHex(makeOwnersMerkleTree(zkSafeModulePrivateOwners).root) :
+          hre.viem.toHex(0n);
+  
     // Enable module
     const calldata = encodeFunctionData({
         abi: [{
             name: 'enableModule',
             type: 'function',
             stateMutability: 'nonpayable',
-            inputs: [{ name: 'module', type: 'address' }],
+            inputs: [{ name: 'ownersRoot', type: 'bytes32' },
+                     { name: 'threshold', type: 'uint256' }],
             outputs: []
         }],
         functionName: 'enableModule',
-        args: [zkSafeModule.address]
+        args: [ownersRoot, zkSafeModuleThreshold],
     });
 
     const safe = await Safe.init({
@@ -262,7 +267,7 @@ export async function createZkSafe(hre: HardhatRuntimeEnvironment, owners: strin
         predictedSafe: {
             safeAccountConfig: {
                 owners,
-                threshold: 1,
+                threshold: threshold,
                 to: zkSafeModule.address,
                 data: calldata,
             }
@@ -290,3 +295,120 @@ export async function createZkSafe(hre: HardhatRuntimeEnvironment, owners: strin
 
     console.log("Created zkSafe at address: ", safeAddress);
 }
+
+export async function sign(hre: HardhatRuntimeEnvironment, safeAddr: string, to: string, value: string, data: string) {
+    // Get wallet client
+    const pk = vars.get("SAFE_OWNER_PRIVATE_KEY") as string;
+    const publicClient = await hre.viem.getPublicClient();
+    const account = privateKeyToAccount(ensureHexPrefix(pk));
+    const mywalletAddress = account.address;
+    console.log("My wallet address: ", mywalletAddress);
+
+    // Initialize Safe
+    const safe = await Safe.init({
+        provider: hre.network.config.url,
+        signer: pk,
+        safeAddress: safeAddr
+    });
+
+    const version = await safe.getContractVersion();
+    const threshold = await safe.getThreshold();
+    const owners = await safe.getOwners();
+    const address = await safe.getAddress();
+    console.log("connected to safe ", address);
+    console.log("  version: ", version);
+    console.log("  owners: ", owners);
+    console.log("  threshold: ", threshold);
+    console.log("  nonce: ", await safe.getNonce());
+    console.log("  chainId: ", await safe.getChainId());
+    console.log("  balance: ", formatEther(await safe.getBalance()));
+
+    const safeTransactionData: SafeTransactionData = {
+        to,
+        value,
+        data,
+        operation: 0,
+        // default fields below
+        safeTxGas: "0x0",
+        baseGas: "0x0",
+        gasPrice: "0x0",
+        gasToken: zeroAddress,
+        refundReceiver: zeroAddress,
+        nonce: await safe.getNonce(),
+    };
+
+    console.log("transaction", safeTransactionData);
+    const transaction = await safe.createTransaction({ transactions: [safeTransactionData] });
+    const txHash = await safe.getTransactionHash(transaction);
+    console.log("txHash", txHash);
+
+    // Sign the transaction using the Safe instance
+    const signedTransaction = await safe.signTransaction(transaction);
+    const safeSig = signedTransaction.getSignature(mywalletAddress)!;
+    console.log("Signature: ", safeSig.data);
+}
+
+export async function zksend(hre: any, safeAddr: string, to: string, value: string, data: string, proof: string, privateOwners: bool) {
+    // Get wallet client
+    const pk = ensureHexPrefix(vars.get("DEPLOYER_PRIVATE_KEY") as string);
+    const account = privateKeyToAccount(pk);
+    const mywalletAddress = account.address;
+    console.log("My wallet address: ", mywalletAddress);
+    const publicClient = await hre.viem.getPublicClient();
+
+    // Initialize Safe
+    const safe = await Safe.init({
+        provider: hre.network.config.url,
+        signer: pk,
+        safeAddress: safeAddr
+    });
+
+    const version = await safe.getContractVersion();
+    const threshold = await safe.getThreshold();
+    const owners = await safe.getOwners();
+    const safeAddress = await safe.getAddress();
+    console.log("connected to safe ", safeAddress);
+    console.log("  version: ", version);
+    console.log("  owners: ", owners);
+    console.log("  threshold: ", threshold);
+    console.log("  nonce: ", await safe.getNonce());
+    console.log("  chainId: ", await safe.getChainId());
+    console.log("  balance: ", formatEther(await safe.getBalance()));
+
+    // Find ZkSafeModule
+    const modules = await safe.getModules();
+    let zkSafeModule = null;
+    for (const moduleAddress of modules) {
+        console.log("Checking module: ", moduleAddress);
+        try {
+            const module = await hre.viem.getContractAt("ZkSafePrivateOwnersModule", moduleAddress);
+            const version = await module.read.zkSafeModuleVersion();
+            console.log("ZkSafe version: ", version);
+            zkSafeModule = module;
+            break;
+        } catch (e) {
+            console.log("Not a ZkSafe module", e);
+        }
+    }
+    if (!zkSafeModule) {
+        throw new Error(`ZkSafeModule not found on Safe ${safeAddress}`);
+    }
+
+    // Send transaction
+    const txn = await zkSafeModule.write.sendZkSafeTransaction([
+        safeAddress,
+        {
+            to,
+            value: BigInt(value),
+            data,
+            operation: 0
+        },
+        privateOwners,
+        proof,
+    ]);
+
+    console.log("Transaction hash: ", txn);
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: txn });
+    console.log("Transaction result: ", receipt);
+}
+
