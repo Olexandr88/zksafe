@@ -21,10 +21,12 @@ contract ZkSafePrivateOwnersModule {
     struct zkSafeConfig {
         // Owner root
         bytes32 ownersRoot;
+
         // Threshhold
         uint256 threshold;
     }
 
+    // if the Safe doesn't have private owners configured, ownersRoot will be bytes32(0).
     mapping(Safe => zkSafeConfig) public safeToConfig;
 
     constructor(PublicOwnersVerifier _publicVerifier, PrivateOwnersVerifier _privateVerifier) {
@@ -54,11 +56,14 @@ contract ZkSafePrivateOwnersModule {
         address payable thisAddr = payable(address(this));
         Safe(thisAddr).enableModule(zkSafeModuleAddress);
 
-        if (ownersRoot != bytes32(0)) {
-            // Initialize zkMultisg config
-            ZkSafePrivateOwnersModule(zkSafeModuleAddress)
-                .updateZkMultisigConf(ownersRoot, threshold);
-        }
+        console.log("Enabled zkSafe module on Safe ");
+        console.logAddress(thisAddr);
+        console.logBytes32(ownersRoot);
+        console.logAddress(zkSafeModuleAddress);
+
+        // Initialize zkMultisg config
+        ZkSafePrivateOwnersModule(zkSafeModuleAddress)
+            .updateZkMultisigConf(ownersRoot, threshold);
     }
 
      /*

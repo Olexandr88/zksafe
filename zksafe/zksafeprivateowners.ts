@@ -72,9 +72,11 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
                                                  signatures: Hex[],
                                                  txHash: Hex,
                                                  privateOwners: Address[],
-                                                 threshold: Number) {
-    const { noir, backend } = await hre.noir.getCircuit("circuits");
-    console.log("noir backend initialized");
+                                                 threshold: number | bigint) {
+    // Use private_owners circuit if we have private owners, otherwise use public owners circuit
+    const circuitName = privateOwners.length > 0 ? "private_owners" : "circuits";
+    const { noir, backend } = await hre.noir.getCircuit(circuitName);
+    console.log("noir backend initialized for", circuitName);
     
     const nil_pubkey = {
         x: Array.from(toBytes("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")),
@@ -106,9 +108,9 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
             ownersPathsProof.push(addressProof.siblings);
         }
         input = {
-            threshold,
-            signers: padArray(signatures.map(async (sig) => extractCoordinates(
-                await recoverPublicKey({hash: txHash, signature: sig}))),
+            threshold: threshold,
+            signers: padArray(await Promise.all(signatures.map(async (sig) => extractCoordinates(
+                await recoverPublicKey({hash: txHash, signature: sig})))),
                               4,
                               nil_pubkey),
             signatures: padArray(signatures.map(extractRSFromSignature), 4, nil_signature),
@@ -133,6 +135,7 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
         }
     }
     // Generate witness first
+    console.log("input", input);
     const { witness } = await noir.execute(input);
     
     // Use backend to generate proof from witness

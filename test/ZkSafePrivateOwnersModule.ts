@@ -2,6 +2,7 @@ import hre, { deployments } from 'hardhat';
 import { expect } from "chai";
 import assert = require('assert');
 import { WalletClient, PublicClient, zeroAddress, parseEther, encodeFunctionData, isBytes, isHex, toHex, fromHex, concatHex, Account, toBytes, fromBytes, recoverAddress, recoverPublicKey, Hex, getContract } from "viem";
+import { privateKeyToAccount } from 'viem/accounts';
 import Safe, {
     ContractNetworksConfig,
     PredictedSafeProps,
@@ -75,10 +76,12 @@ describe("ZkSafeModule", function () {
 
     let safe: Safe;
     let zkSafeModule: any;
-    let verifierContract: any;
+    let publicVerifierContract: any;
+    let privateVerifierContract: any;
 
     let createSafeFromWalletAddress:  (wallet: WalletClient, safeAddress: string) => Promise<Safe>;
     let signTransactionFromUser: (wallet: WalletClient, safe: Safe, transaction: SafeTransaction) => Promise<SafeSignature>;
+    let signTransactionEIP712: (wallet: WalletClient, safe: Safe, transaction: SafeTransaction, chainId: number) => Promise<Hex>;
 
     let privateOwners: WalletClient[];
     
@@ -92,8 +95,9 @@ describe("ZkSafeModule", function () {
         await deployments.fixture();
 
         const result = await hre.ignition.deploy(ZkSafeModule);
-        zkSafeModule = result.zkSafeModule;
-        verifierContract = result.verifier;
+        zkSafeModule = result.zkSafePrivateOwnersModule;
+        publicVerifierContract = result.publicVerifier;
+        privateVerifierContract = result.privateVerifier;
 
         // Get deployer account
         accounts = await hre.viem.getWalletClients();
@@ -122,7 +126,8 @@ describe("ZkSafeModule", function () {
                                               
         privateOwners = accounts.slice(3, 8);
         console.log("Safe private Owners", privateOwners);
-
+        const ownersRoot = toHex(makeOwnersMerkleTree(accountAddresses(privateOwners)).root);
+        console.log("calculated owners root as: ", ownersRoot);
         const calldata = encodeFunctionData({
             abi: [{
                 name: 'enableModule',
@@ -133,8 +138,10 @@ describe("ZkSafeModule", function () {
                 outputs: []
             }],
             functionName: 'enableModule',
-            args: [toHex(makeOwnersMerkleTree(accountAddresses(privateOwners)).root), BigInt(threshold)],
+            args: [ownersRoot, BigInt(1)],
         });
+      console.log("calldata: ", calldata);
+      console.log("zkSafemodule.address ", zkSafeModule.address)
 
         safe = await Safe.init({
             provider: walletClient.transport,
@@ -174,11 +181,58 @@ describe("ZkSafeModule", function () {
         // initialized Safe.
         safe = await createSafeFromWalletAddress(usersWalletClient, safeAddress);
 
+      console.log("zkSafeModule address", zkSafeModule.address);
+      const privateSafeConfig = await zkSafeModule.read.safeToConfig([safeAddress]);
+      console.log("initializaed private safe config: ", privateSafeConfig);
+
         signTransactionFromUser = async (wallet: WalletClient, safe: Safe, transaction: SafeTransaction): Promise<SafeSignature> => {
             const userSafe = await createSafeFromWalletAddress(wallet, await safe.getAddress());
             const signerAddress = await userSafe.getSafeProvider().getSignerAddress();
             const signedTransaction = await userSafe.signTransaction(transaction);
             return signedTransaction.getSignature(signerAddress!)!;
+        };
+
+        // Sign transaction using EIP-712 without Safe ownership check
+        signTransactionEIP712 = async (wallet: WalletClient, safe: Safe, transaction: SafeTransaction, chainId: number): Promise<Hex> => {
+            const safeAddress = await safe.getAddress();
+
+            // EIP-712 domain for Safe
+            const domain = {
+                chainId: chainId,
+                verifyingContract: safeAddress as `0x${string}`,
+            };
+
+            // EIP-712 types for Safe transaction
+            const types = {
+                SafeTx: [
+                    { name: 'to', type: 'address' },
+                    { name: 'value', type: 'uint256' },
+                    { name: 'data', type: 'bytes' },
+                    { name: 'operation', type: 'uint8' },
+                    { name: 'safeTxGas', type: 'uint256' },
+                    { name: 'baseGas', type: 'uint256' },
+                    { name: 'gasPrice', type: 'uint256' },
+                    { name: 'gasToken', type: 'address' },
+                    { name: 'refundReceiver', type: 'address' },
+                    { name: 'nonce', type: 'uint256' },
+                ],
+            };
+
+            // Message to sign
+            const message = {
+                to: transaction.data.to,
+                value: BigInt(transaction.data.value),
+                data: transaction.data.data,
+                operation: transaction.data.operation,
+                safeTxGas: BigInt(transaction.data.safeTxGas),
+                baseGas: BigInt(transaction.data.baseGas),
+                gasPrice: BigInt(transaction.data.gasPrice),
+                gasToken: transaction.data.gasToken,
+                refundReceiver: transaction.data.refundReceiver,
+                nonce: BigInt(transaction.data.nonce),
+            };
+
+            return await wallet.signTypedData({ domain, types, primaryType: 'SafeTx', message });
         };
 
         const circuits =  await hre.noir.getCircuit("circuits");
@@ -198,15 +252,20 @@ describe("ZkSafeModule", function () {
     it("Should succeed verification of a basic transaction", async function () {
 
         const nonce = await safe.getNonce();
-        const threshold = (await zkSafeModule.read.safeToConfig(safe)).threshold;
+        const privateSafeConfig = await zkSafeModule.read.safeToConfig([safeAddress]);
+        const threshold = privateSafeConfig[1];
         const metaTransaction = makeSafeTransaction(nonce, {});
         const transaction = await safe.createTransaction({ transactions: [metaTransaction] });
         const txHash = await safe.getTransactionHash(transaction);
 
-        const sig1 = await signTransactionFromUser(privateOwners[0], safe, transaction);
-        const sig2 = await signTransactionFromUser(privateOwners[1], safe, transaction);
-        const sig3 = await signTransactionFromUser(privateOwners[2], safe, transaction);
-        const signatures = [sig2.data as Hex, sig3.data as Hex]; // sig1 is not included, threshold of 2 should be enough.
+        // Get chainId for EIP-712 signing
+        const chainId = await publicClient.getChainId();
+
+        // Sign with private owners using EIP-712 (bypassing Safe ownership check)
+        const sig1 = await signTransactionEIP712(privateOwners[0], safe, transaction, chainId);
+        const sig2 = await signTransactionEIP712(privateOwners[1], safe, transaction, chainId);
+        const sig3 = await signTransactionEIP712(privateOwners[2], safe, transaction, chainId);
+        const signatures = [sig2, sig3]; // sig1 is not included, threshold of 2 should be enough.
         const proof = await proveTransactionSignatures(hre,
                                                        safe,
                                                        signatures,
@@ -215,9 +274,9 @@ describe("ZkSafeModule", function () {
                                                        threshold);
         // Convert Uint8Array proof to hex string for contract call
         const proofHex = `0x${Buffer.from(proof.proof).toString('hex')}`;
-        const directVerification = await verifierContract.read.verify([proofHex, proof.publicInputs]);
+        const directVerification = await publicVerifierContract.read.verify([proofHex, proof.publicInputs]);
 
-        const contractVerification = await zkSafeModule.read.verifyZkSafeTransaction([await safe.getAddress(), txHash, proofHex]);
+        const contractVerification = await zkSafeModule.read.verifyZkSafeTransaction([await safe.getAddress(), txHash, true, proofHex]);
         const txn = await zkSafeModule.write.sendZkSafeTransaction([
             safeAddress,
             { to: transaction.data.to,
@@ -225,6 +284,7 @@ describe("ZkSafeModule", function () {
               data: transaction.data.data,
               operation: transaction.data.operation,
             },
+            true, // usePrivateOwners
             proofHex, // Use truncated proof for transaction
         ]);
 
@@ -246,6 +306,7 @@ describe("ZkSafeModule", function () {
         await expect(zkSafeModule.write.sendZkSafeTransaction([
           "0x0000000000000000000000000000000000000000",
           transaction,
+          true, // usePrivateOwners
           "0x", // empty proof
         ])).to.be.rejected;
     });
@@ -262,6 +323,7 @@ describe("ZkSafeModule", function () {
         await expect(zkSafeModule.write.sendZkSafeTransaction([
             await safe.getAddress(),
             transaction,
+            true, // usePrivateOwners
             "0x" + "0".repeat(2 * 440 * 32), // invalid proof (440 * 32 zeros)
         ])).to.be.rejectedWith(/custom error/);
     });
