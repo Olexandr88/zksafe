@@ -125,9 +125,7 @@ describe("ZkSafeModule", function () {
         }
                                               
         privateOwners = accounts.slice(3, 8);
-        console.log("Safe private Owners", privateOwners);
         const ownersRoot = toHex(makeOwnersMerkleTree(accountAddresses(privateOwners)).root);
-        console.log("calculated owners root as: ", ownersRoot);
         const calldata = encodeFunctionData({
             abi: [{
                 name: 'enableModule',
@@ -140,8 +138,6 @@ describe("ZkSafeModule", function () {
             functionName: 'enableModule',
             args: [ownersRoot, BigInt(1)],
         });
-      console.log("calldata: ", calldata);
-      console.log("zkSafemodule.address ", zkSafeModule.address)
 
         safe = await Safe.init({
             provider: walletClient.transport,
@@ -181,9 +177,7 @@ describe("ZkSafeModule", function () {
         // initialized Safe.
         safe = await createSafeFromWalletAddress(usersWalletClient, safeAddress);
 
-      console.log("zkSafeModule address", zkSafeModule.address);
-      const privateSafeConfig = await zkSafeModule.read.safeToConfig([safeAddress]);
-      console.log("initializaed private safe config: ", privateSafeConfig);
+        const privateSafeConfig = await zkSafeModule.read.safeToConfig([safeAddress]);
 
         signTransactionFromUser = async (wallet: WalletClient, safe: Safe, transaction: SafeTransaction): Promise<SafeSignature> => {
             const userSafe = await createSafeFromWalletAddress(wallet, await safe.getAddress());

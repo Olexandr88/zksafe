@@ -108,7 +108,7 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
             ownersPathsProof.push(addressProof.siblings);
         }
         input = {
-            threshold: threshold,
+            threshold: Number(threshold),
             signers: padArray(await Promise.all(signatures.map(async (sig) => extractCoordinates(
                 await recoverPublicKey({hash: txHash, signature: sig})))),
                               4,
@@ -116,8 +116,8 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
             signatures: padArray(signatures.map(extractRSFromSignature), 4, nil_signature),
             txn_hash: Array.from(toBytes(txHash as `0x${string}`)),
             owners_root: toHex(ownersMerkleTree.root),
-            indices: padArray(ownersIndicesProof.map(indice => toHex(indice)), 4, "0x0"),
-            siblings: padArray(ownersPathsProof.map(paths => paths.map(path => toHex(path))), 4, ["0x0", "0x0", "0x0"])
+            indices: padArray(ownersIndicesProof.map(idx => toHex(idx)), 4, "0x0"),
+            siblings: padArray(ownersPathsProof.map(paths => paths.map(p => toHex(p))), 4, ["0x0", "0x0", "0x0"])
         };
     } else {
         input = {
@@ -134,8 +134,6 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
             owners: padArray((await safe.getOwners()).map(addressToArray), 10, zero_address),
         }
     }
-    // Generate witness first
-    console.log("input", input);
     const { witness } = await noir.execute(input);
     
     // Use backend to generate proof from witness
