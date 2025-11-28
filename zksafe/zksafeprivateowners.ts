@@ -79,7 +79,7 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
                                                  threshold: number | bigint) {
     // Use private_owners circuit if we have private owners, otherwise use public owners circuit
     const circuitName = privateOwners.length > 0 ? "private_owners" : "circuits";
-    const { noir, backend } = await hre.noir.getCircuit(circuitName);
+    const { noir, backend } = await hre.noir.getCircuit(circuitName, UltraHonkBackend);
     console.log("noir backend initialized for", circuitName);
     
     const nil_pubkey = {

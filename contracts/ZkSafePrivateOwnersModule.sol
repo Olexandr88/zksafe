@@ -56,11 +56,6 @@ contract ZkSafePrivateOwnersModule {
         address payable thisAddr = payable(address(this));
         Safe(thisAddr).enableModule(zkSafeModuleAddress);
 
-        console.log("Enabled zkSafe module on Safe ");
-        console.logAddress(thisAddr);
-        console.logBytes32(ownersRoot);
-        console.logAddress(zkSafeModuleAddress);
-
         // Initialize zkMultisg config
         ZkSafePrivateOwnersModule(zkSafeModuleAddress)
             .updateZkMultisigConf(ownersRoot, threshold);

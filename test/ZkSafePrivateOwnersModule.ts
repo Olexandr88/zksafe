@@ -15,7 +15,6 @@ import ZkSafeModule from "../ignition/modules/zkSafe";
 
 import circuit from '../circuits/target/circuits.json';
 import { UltraHonkBackend } from '@aztec/bb.js';
-import { Noir } from '@noir-lang/noir_js';
 import { extractCoordinates, extractRSFromSignature, addressToArray, padArray, prove, proveTransactionSignatures, makeOwnersMerkleTree } from '../zksafe/zksafeprivateowners';
 
 const DEFAULT_TRANSACTION = {
@@ -86,10 +85,6 @@ describe("ZkSafeModule", function () {
     let privateOwners: WalletClient[];
     
     let ownersMerkleTree: IMT;
-
-    // New Noir Way
-    let noir: Noir;
-    let backend: UltraHonkBackend;
 
     before(async function () {
         await deployments.fixture();
@@ -228,11 +223,6 @@ describe("ZkSafeModule", function () {
 
             return await wallet.signTypedData({ domain, types, primaryType: 'SafeTx', message });
         };
-
-        const circuits =  await hre.noir.getCircuit("circuits");
-        noir = circuits.noir;
-        backend = circuits.backend;
-//        await noir.init();
     });
 
     function readjustSigFromEthSign(signature: SafeSignature): Hex {
@@ -278,9 +268,12 @@ describe("ZkSafeModule", function () {
                                                        threshold);
         // Convert Uint8Array proof to hex string for contract call
         const proofHex = `0x${Buffer.from(proof.proof).toString('hex')}`;
-        const directVerification = await publicVerifierContract.read.verify([proofHex, proof.publicInputs]);
 
-        const contractVerification = await zkSafeModule.read.verifyZkSafeTransaction([await safe.getAddress(), txHash, true, proofHex]);
+        const directVerification = await privateVerifierContract.read.verify([proofHex, proof.publicInputs]);
+
+        const contractVerification = await zkSafeModule.read.verifyZkSafeTransaction([await safe.getAddress(), txHash, true, proofHex], {
+            gas: 30000000n  // 30M gas limit for the eth_call
+        });
         const txn = await zkSafeModule.write.sendZkSafeTransaction([
             safeAddress,
             { to: transaction.data.to,
