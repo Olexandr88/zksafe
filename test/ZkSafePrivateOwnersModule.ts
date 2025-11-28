@@ -260,6 +260,16 @@ describe("ZkSafeModule", function () {
         const sig2 = await signTransactionEIP712(privateOwners[1], safe, transaction, chainId);
         const sig3 = await signTransactionEIP712(privateOwners[2], safe, transaction, chainId);
         const signatures = [sig2, sig3]; // sig1 is not included, threshold of 2 should be enough.
+
+        // Debug: Verify the signatures recover to the expected addresses
+        const addr1 = await recoverAddress({hash: txHash as Hex, signature: sig1});
+        const addr2 = await recoverAddress({hash: txHash as Hex, signature: sig2});
+        const addr3 = await recoverAddress({hash: txHash as Hex, signature: sig3});
+        console.log("Signer addresses recovered from signatures:");
+        console.log("  sig1:", addr1, "expected:", privateOwners[0].account?.address);
+        console.log("  sig2:", addr2, "expected:", privateOwners[1].account?.address);
+        console.log("  sig3:", addr3, "expected:", privateOwners[2].account?.address);
+
         const proof = await proveTransactionSignatures(hre,
                                                        safe,
                                                        signatures,

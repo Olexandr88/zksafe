@@ -60,10 +60,14 @@ function ensureHexPrefix(value: string): `0x${string}` {
 export function makeOwnersMerkleTree(owners: Address[]) {
     const depth = Math.ceil(Math.log2(owners.length));
     let ownersMerkleTree = new IMT(poseidon.hash, depth, 0, 2);
-    const sortedOwners = [...owners].sort((a, b) => a.localeCompare(b));
-    for (let owner of sortedOwners) {
-        ownersMerkleTree.insert(poseidon.hash([BigInt(owner)]));
-    }
+    // Normalize to lowercase for consistent hashing
+    const sortedOwners = [...owners].map(a => a.toLowerCase() as Address).sort((a, b) => a.localeCompare(b));
+    console.log("Building merkle tree with sorted owners:");
+    sortedOwners.forEach((owner, i) => {
+        const hash = poseidon.hash([BigInt(owner)]);
+        console.log(`  [${i}]: ${owner} -> hash: ${hash}`);
+        ownersMerkleTree.insert(hash);
+    });
     return ownersMerkleTree;
 }
 
@@ -95,25 +99,43 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
     sortedSignatures.sort((a, b) => a.addr.localeCompare(b.addr));
     const sortedSigs = sortedSignatures.map(s => s.sig);
 
+    console.log("Sorted signatures by address:");
+    sortedSignatures.forEach((s, i) => console.log(`  [${i}]:`, s.addr));
+
     let input;
     if (privateOwners.length > 0) {
         let ownersMerkleTree = makeOwnersMerkleTree(privateOwners);
+        console.log("Merkle tree leaves (sorted owners):", privateOwners.map((addr, i) => `[${i}]: ${addr}`));
+        console.log("Merkle tree root:", toHex(ownersMerkleTree.root));
         const ownersIndicesProof: number[] = [];
         const ownersPathsProof: any[][] = [];
         for (var signature of sortedSignatures) {
-            const index= await ownersMerkleTree.indexOf(poseidon.hash([BigInt(signature.addr)]));
+            // Normalize address to lowercase for consistent lookup
+            const normalizedAddr = signature.addr.toLowerCase();
+            const index= await ownersMerkleTree.indexOf(poseidon.hash([BigInt(normalizedAddr)]));
             const addressProof= await ownersMerkleTree.createProof(index);
+            console.log(`  Address ${normalizedAddr} found at index ${index}, pathIndices:`, addressProof.pathIndices);
             addressProof.siblings = addressProof.siblings.map((s) => s[0]);
             ownersIndicesProof.push(Number("0b" + addressProof.pathIndices.join("")));
             ownersPathsProof.push(addressProof.siblings);
         }
+        const signers = padArray(await Promise.all(sortedSigs.map(async (sig) => extractCoordinates(
+            await recoverPublicKey({hash: txHash, signature: sig})))),
+                          4,
+                          nil_pubkey);
+        const sigs = padArray(sortedSigs.map(extractRSFromSignature), 4, nil_signature);
+
+        console.log("Circuit inputs for signature verification:");
+        for (let i = 0; i < Math.min(2, sortedSigs.length); i++) {
+            console.log(`  Sig ${i}: ${sortedSigs[i].slice(0, 20)}...`);
+            console.log(`    Pubkey X (first 8 bytes): [${signers[i].x.slice(0, 8).join(', ')}]`);
+            console.log(`    Signature R (first 8 bytes): [${sigs[i].slice(0, 8).join(', ')}]`);
+        }
+
         input = {
             threshold: Number(threshold),
-            signers: padArray(await Promise.all(signatures.map(async (sig) => extractCoordinates(
-                await recoverPublicKey({hash: txHash, signature: sig})))),
-                              4,
-                              nil_pubkey),
-            signatures: padArray(signatures.map(extractRSFromSignature), 4, nil_signature),
+            signers: signers,
+            signatures: sigs,
             txn_hash: Array.from(toBytes(txHash as `0x${string}`)),
             owners_root: toHex(ownersMerkleTree.root),
             indices: padArray(ownersIndicesProof.map(idx => toHex(idx)), 4, "0x0"),
