@@ -271,9 +271,7 @@ describe("ZkSafeModule", function () {
 
         const directVerification = await privateVerifierContract.read.verify([proofHex, proof.publicInputs]);
 
-        const contractVerification = await zkSafeModule.read.verifyZkSafeTransaction([await safe.getAddress(), txHash, true, proofHex], {
-            gas: 30000000n  // 30M gas limit for the eth_call
-        });
+        const contractVerification = await zkSafeModule.read.verifyZkSafeTransaction([await safe.getAddress(), txHash, true, proofHex]);
         const txn = await zkSafeModule.write.sendZkSafeTransaction([
             safeAddress,
             { to: transaction.data.to,
