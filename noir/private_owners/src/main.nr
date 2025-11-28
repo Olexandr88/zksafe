@@ -34,19 +34,17 @@ fn hash_values(leaves: [Field; 2]) -> Field {
     hash
 }
 
-fn merkle_tree_root<let N: u32>(leaf: Field, path_index: u32, siblings: [Field; N]) -> Field {
+fn merkle_tree_root<let N: u32>(leaf: Field, path_indices: Field, siblings: ([Field; N])) -> Field {
+    let index_bits = path_indices.to_be_bits::<N>();
     let mut current = leaf;
-    let mut index = path_index;
-
     for i in 0..N {
-        let path_bit = (index & 1) == 1;
+        let path_bit = index_bits[i] as bool;
         let (hash_left, hash_right) = if path_bit {
             (siblings[i], current)
         } else {
             (current, siblings[i])
         };
         current = hash_values([hash_left, hash_right]);
-        index = index >> 1;
     }
     current
 }
@@ -88,7 +86,7 @@ fn verify_signers<let T: u32>(threshold: u8, signers: [PubKey; T], signatures: [
             }
 
             let address_hash = poseidon::bn254::hash_1([result]);
-            assert(owners_root == merkle_tree_root(address_hash, indices[i] as u32, siblings[i]));
+            assert(owners_root == merkle_tree_root(address_hash, indices[i], siblings[i]));
 
             curr_owner = address;
             num_verified_signatures += 1;
