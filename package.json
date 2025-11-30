@@ -1,6 +1,6 @@
 {
   "name": "zksafe",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "Safe with ZK Signing",
   "main": "index.js",
   "author": "Valeriy Zamaraiev <v@1kx.capital>",
