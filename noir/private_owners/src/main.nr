@@ -72,8 +72,8 @@ fn verify_signers<let T: u32>(threshold: u8, signers: [PubKey; T], signatures: [
             for j in 0..20 {
                 address[j] = pubkey_hash[j + 12];
             }
-            // Check the uniquiness of each signature by requiring and asserting they are sorted in strictly increasing order.
-            // We need this to avoid the same signature being used mulitple times.
+            // Check the uniqueness of each signature by requiring and asserting they are sorted in strictly increasing order.
+            // We need this to avoid the same signature being used multiple times.
             // (Check Safe verification code for more details - it does the same checking).
             assert(cmp_gt(address, curr_owner));
 

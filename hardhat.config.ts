@@ -41,8 +41,11 @@ task("prove", "Prove a zksafe transaction")
     .addParam("txhash", "Transaction hash")
     .addParam("signatures", "Signatures (comma separated)")
     .addOptionalParam("zksafemoduleprivateowners", "Comma Separated list of private owners")
-    .addOptionalParam("ownersaddressesformat", "The proof")
-    .setAction(async (taskArgs, hre) => prove(hre, taskArgs.safe, taskArgs.txhash, taskArgs.signatures, taskArgs.zksafemoduleprivateowners.split(","), taskArgs.ownersaddressesformat));
+    .setAction(async (taskArgs, hre) => prove(hre,
+                                              taskArgs.safe,
+                                              taskArgs.txhash,
+                                              taskArgs.signatures,
+                                              (taskArgs.zksafemoduleprivateowners ?? "").split(",")));
 
 task("sign", "Sign Safe transaction")
     .addParam("safe", "Address of the Safe")

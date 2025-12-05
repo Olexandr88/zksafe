@@ -169,7 +169,7 @@ export async function proveTransactionSignatures(hre: HardhatRuntimeEnvironment,
 }
 
 
-export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, txHash: string, signatures_: string) {
+export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, txHash: string, signatures_: string, privateOwners: Address[] = []) {
     // Initialize Safe - we need it to prepare the witness (owners/threeshold) from onchain data.
     const safe = await Safe.init({
         provider: hre.network.config.url,
@@ -194,7 +194,7 @@ export async function prove(hre: HardhatRuntimeEnvironment, safeAddr: string, tx
         }
         return true;
     });
-    const proof = await proveTransactionSignatures(hre, safe, signatures as Hex[], txHash as Hex);
+    const proof = await proveTransactionSignatures(hre, safe, signatures as Hex[], txHash as Hex, privateOwners, threshold);
     console.log("Proof: ", toHex(proof.proof));
 }
 

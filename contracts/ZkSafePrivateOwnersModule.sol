@@ -22,7 +22,7 @@ contract ZkSafePrivateOwnersModule {
         // Owner root
         bytes32 ownersRoot;
 
-        // Threshhold
+        // Threshold
         uint256 threshold;
     }
 
@@ -63,9 +63,11 @@ contract ZkSafePrivateOwnersModule {
 
      /*
      * @dev Update the zk multisg config for the msg.sender, which should be a zkSafe that wants to implement this module
-     * @param module The address of the module to enable.
+     * @param ownersRoot Owners Merkle tree root.
+     * @param threshold Number of required signaures.
      */
     function updateZkMultisigConf(bytes32 ownersRoot, uint256 threshold) external {
+        require(threshold >= 1 , "Threshold must be 1 or more");
         require(threshold < 256, "Threshold must be less than 256");
 
         safeToConfig[Safe(payable(msg.sender))] = zkSafeConfig({
@@ -208,6 +210,6 @@ contract ZkSafePrivateOwnersModule {
             transaction.operation
         );
 
-        require(result, "Execution of the transction from zkSafe module failed");
+        require(result, "Execution of the transaction from zkSafe module failed");
     }
 }

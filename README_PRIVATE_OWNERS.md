@@ -1,6 +1,6 @@
 # Hiding Owners in ZkSafe
 
-The version 1.0.x of zkSafe could only hide who singed a particular transaction out of a given set of owners.
+The version 1.0.x of zkSafe could only hide who signed a particular transaction out of a given set of owners.
 With the version 2.0 of zkSafe, we introduce the ability to hide the owners themselves.
 
 ## Merkle Tree of Hidden Owners
@@ -9,13 +9,13 @@ The zkSafe contract keeps a Merkle tree root of the set of hidden owners. The us
 
 Only the party proving transactions has to have access to this full list, in addition to the full list of signatures.
 
-This could be, for example, in a secret chat beween the owners of the Safe, an encrypted storage, or a program running in a Trusted Execution Environment that manages owners.
+This could be, for example, in a secret chat between the owners of the Safe, an encrypted storage, or a program running in a Trusted Execution Environment that manages owners.
 
 ## Usage
 
 At the moment, only command line in the form of Hardhat tasks is implemented:
 
-     * Task  `createZkSafe` accepts additiona arguments `--zksafemoduleprivateowners` and `--zksafemodulethreshold`.
+     * Task  `createZkSafe` accepts additional arguments `--zksafemoduleprivateowners` and `--zksafemodulethreshold`.
      * Task `prove` accepts `--zksafemoduleprivateowners`.
  
 
@@ -38,7 +38,7 @@ If the `--zksafemoduleprivateowners` is not given, all operations performed are 
 
 ## Combined Contract
 
-There's only one zkSafe module contract in the system. It handles both public and private owners. There are two UltraHonk verifiers, and the zkSafe module contract chooses among them during verficiation based on the operation requested by the user (via the `usePrivateOwners` argument to `verifyZkSafeTransaction` and `sendZksafetransaction`).
+There's only one zkSafe module contract in the system. It handles both public and private owners. There are two UltraHonk verifiers, and the zkSafe module contract chooses among them during verficiation based on the operation requested by the user (via the `usePrivateOwners` argument to `verifyZkSafeTransaction` and `sendZksafeTransaction`).
 
 
 ## UI
@@ -61,4 +61,4 @@ One possible good way to use the system:
 4. Transaction is executed.  Bumped nonce will consume the transaction created in the Safe UI.
 
 
-Another way would be implementing an alernative Safe UI that keeps owners in the private, and performs proving in a TEE environment.
+Another way would be implementing an alternative Safe UI that keeps owners in the private, and performs proving in a TEE environment.

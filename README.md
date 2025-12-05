@@ -12,7 +12,7 @@ Once the module sees such a proof accompanying a Safe transaction, the module ca
 
 The currently deployed zkSafe version (0.0.1) does not support hiding owners. The whole world can still see who the Safe owners are. Only the signers of specific transactions are hidden.  In the future zkSafe will also hide the list of owners.
 
-However, as of 2.0.0, hiding of owners is supported.  For details, see [README_PRIVATE_OWNERS.md]. This version is not yet audited and deployed. The rest of the document described the currently deployed system with open owners.
+However, as of 2.0.0, hiding of owners is supported.  For details, see [README_PRIVATE_OWNERS.md](README_PRIVATE_OWNERS.md). This version is not yet audited and deployed. The rest of the document described the currently deployed system with open owners.
 
 # Available Networks
 
@@ -74,7 +74,7 @@ First, compile the project so that the Ultraverifier Solidity code is produced:
 npx hardhat compile
 ```
 
-One can add the zkSafe module to any existing Safe thus enabling the option of zk singing.
+One can add the zkSafe module to any existing Safe thus enabling the option of zk signing.
 
 #### Manually adding zkSafe
 
