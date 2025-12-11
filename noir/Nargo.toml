@@ -1,4 +1,5 @@
 [workspace]
 members = [
-  "circuits"
+  "circuits",
+  "private_owners",
 ]

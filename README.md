@@ -10,7 +10,9 @@ zkSafe allows Safe owners to collectively sign transactions, without revealing w
 
 Once the module sees such a proof accompanying a Safe transaction, the module can safely execute it.
 
-Currently, zkSafe doesn't hide the owners themselves. The whole world can still see who the Safe owners are. Only the signers of specific transactions are hidden.  In the future zkSafe will also hide the list of owners.
+The currently deployed zkSafe version (0.0.1) does not support hiding owners. The whole world can still see who the Safe owners are. Only the signers of specific transactions are hidden.  In the future zkSafe will also hide the list of owners.
+
+However, as of 2.0.0, hiding of owners is supported.  For details, see [README_PRIVATE_OWNERS.md](README_PRIVATE_OWNERS.md). This version is not yet audited and deployed. The rest of the document described the currently deployed system with open owners.
 
 # Available Networks
 
@@ -72,7 +74,7 @@ First, compile the project so that the Ultraverifier Solidity code is produced:
 npx hardhat compile
 ```
 
-One can add the zkSafe module to any existing Safe thus enabling the option of zk singing.
+One can add the zkSafe module to any existing Safe thus enabling the option of zk signing.
 
 #### Manually adding zkSafe
 
@@ -92,7 +94,7 @@ Sign this transaction with threshold number of owners and execute it it.
 Alternatively one can create a Safe with the zk module enabled using the following hardhat task `createZkSafe`, for example:
 
 ```
-$ npx hardhat createZkSafe --network <mainnet|gnosis|sepolia> --owners 0x0Ccb2b6675A60EC6a5c20Fb0631Be8EAF3Ba2dCD,0x48129F999598675F40A6d36Cec58a623b8c0228d,0x6804a7411adFAEB185d4dE27a04e5B6281160822 --threshold 2 
+$ npx hardhat createZkSafe --network <mainnet|gnosis|sepolia> --owners 0x0Ccb2b6675A60EC6a5c20Fb0631Be8EAF3Ba2dCD,0x48129F999598675F40A6d36Cec58a623b8c0228d,0x6804a7411adFAEB185d4dE27a04e5B6281160822 --threshold 2
 initialized my wallet
 My wallet address:  0x0Ccb2b6675A60EC6a5c20Fb0631Be8EAF3Ba2dCD
 zkSafeModule:  0xec2dE1dfa3C2e1435823732E7390eFcF1b1B05B1
@@ -122,7 +124,7 @@ The command will output the transaction hash, and the signature. These values ne
 Having collected all the signatures, we need to generate a proof. This is done with the `prove` hardhat task.
 
 ```
-npx hardhat --network <mainnet|sepolia|gnosis|etc>  prove --safe <safe address>  --signatures <signature1>,<signature2>,<sinagure3> --txhash <txhash>
+npx hardhat --network <mainnet|sepolia|gnosis|etc> prove --safe <safe address> --signatures <signature1>,<signature2>,<sinagure3> --txhash <txhash>
 ```
 
 Proving might take a couple of minutes, and would return a large hex string starting with 0x.  This is the prove that needs to be sent to zkSafe along with the transaction.

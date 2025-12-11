@@ -1,5 +1,5 @@
 [package]
-name = "circuits"
+name = "private_owners"
 type = "bin"
 authors = [""]
 compiler_version = ">=1.0.0"

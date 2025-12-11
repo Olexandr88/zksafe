@@ -4,12 +4,11 @@ import "hardhat-deploy";
 import "@nomicfoundation/hardhat-toolbox-viem";
 import "@nomicfoundation/hardhat-ignition";
 import "@nomicfoundation/hardhat-ignition-viem";
-// import "@nomicfoundation/hardhat-chai-matchers";
 
 import { DeterministicDeploymentInfo } from "hardhat-deploy/dist/types";
 import { getSingletonFactoryInfo } from "@safe-global/safe-singleton-factory";
 
-import { zksend, sign, prove, createZkSafe } from "./zksafe/zksafe";
+import { createZkSafe, prove, sign, zksend } from "./zksafe/zksafeprivateowners";
 
 // copied from @safe-global/safe-contracts
 const deterministicDeployment = (network: string): DeterministicDeploymentInfo => {
@@ -34,14 +33,20 @@ task("zksend", "Send a zksafe transaction with a proof")
     .addParam("value", "Value to send")
     .addParam("data", "Calldata to send")
     .addParam("proof", "The proof")
-    .setAction(async (taskArgs, hre) => zksend(hre, taskArgs.safe, taskArgs.to, taskArgs.value, taskArgs.data, taskArgs.proof));
+    .addOptionalParam("private", "Is a private owners signed transaction", false, types.boolean)
+    .setAction(async (taskArgs, hre) => zksend(hre, taskArgs.safe, taskArgs.to, taskArgs.value, taskArgs.data, taskArgs.proof, taskArgs["private"]));
 
 task("prove", "Prove a zksafe transaction") 
     .addParam("safe", "Address of the Safe")
     .addParam("txhash", "Transaction hash")
     .addParam("signatures", "Signatures (comma separated)")
-    .setAction(async (taskArgs, hre) => prove(hre, taskArgs.safe, taskArgs.txhash, taskArgs.signatures));
-    
+    .addOptionalParam("zksafemoduleprivateowners", "Comma Separated list of private owners")
+    .setAction(async (taskArgs, hre) => prove(hre,
+                                              taskArgs.safe,
+                                              taskArgs.txhash,
+                                              taskArgs.signatures,
+                                              (taskArgs.zksafemoduleprivateowners ?? "").split(",")));
+
 task("sign", "Sign Safe transaction")
     .addParam("safe", "Address of the Safe")
     .addParam("to", "Address of the recipient")
@@ -52,7 +57,9 @@ task("sign", "Sign Safe transaction")
 task("createZkSafe", "Create a ZkSafe")
     .addParam("owners", "Comma separated list of owners")
     .addParam("threshold", "Threshold")
-    .setAction(async (taskArgs, hre) => createZkSafe(hre, taskArgs.owners.split(","), taskArgs.threshold));
+    .addOptionalParam("zksafemoduleprivateowners", "Comma separated list of private owners")
+    .addOptionalParam("zksafemodulethreshold", "Module threshold")
+    .setAction(async (taskArgs, hre) => createZkSafe(hre, taskArgs.owners.split(","), taskArgs.threshold, taskArgs.zksafemoduleprivateowners.split(","), taskArgs.zksafemodulethreshold));
 
 const getAccounts = function(): string[] {
     let accounts = [];
